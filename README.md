@@ -132,6 +132,44 @@ Add to your `openclaw.json`:
 }
 ```
 
+## Deepgram Mimic Server (Android App Support)
+
+Run a local Deepgram-compatible STT server that the OpenClaw Android app can use
+instead of Deepgram's cloud service. This gives you free, private, local speech
+recognition.
+
+```bash
+# Start the Deepgram Mimic server
+PYTHONPATH=. python deepgram_mimic.py
+
+# Or start both servers together
+./run.sh
+```
+
+Point the OpenClaw Android app's streaming STT to:
+```
+ws://your-local-server:8766/v1/listen
+```
+
+### Configuration (Environment Variables)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WHISPER_MODEL` | `small` | Whisper model size |
+| `WHISPER_DEVICE` | `auto` | Device: auto, cpu, cuda, mps |
+| `LANGUAGE` | (auto) | Language code or empty for auto-detect |
+| `PORT` | `8766` | Server port |
+| `HOST` | `0.0.0.0` | Server host |
+| `SILENCE_THRESHOLD` | `0.01` | VAD energy threshold |
+| `SILENCE_DURATION` | `1.0` | Seconds of silence to trigger final transcript |
+| `INTERIM_INTERVAL` | `0.5` | Seconds between interim transcripts |
+
+### How It Works
+1. Android app sends audio to `ws://server:8766/v1/listen` (thinking it's Deepgram)
+2. Server buffers audio and runs local Whisper STT + Silero VAD
+3. Server returns transcripts in Deepgram's exact JSON format
+4. Android app processes transcripts normally — no code changes needed
+
 ## Architecture
 
 ```
