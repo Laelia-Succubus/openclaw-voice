@@ -1,14 +1,17 @@
 #!/bin/bash
 # Start both OpenClaw Voice servers
 # Usage: ./run.sh
+# Uses .venv311 (Python 3.11) for XTTS-v2 support
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Activate venv if it exists
-if [ -f ".venv/bin/activate" ]; then
+# Activate venv311 (Python 3.11 with Coqui TTS/XTTS-v2 support)
+if [ -f ".venv311/bin/activate" ]; then
+    source .venv311/bin/activate
+elif [ -f ".venv/bin/activate" ]; then
     source .venv/bin/activate
 fi
 
