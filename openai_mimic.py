@@ -47,6 +47,7 @@ import json
 import time
 import uuid
 import numpy as np
+from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, WebSocket
@@ -70,7 +71,6 @@ WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "auto")
 LANGUAGE = os.getenv("LANGUAGE", None)
 VOICE_SAMPLE = os.getenv("VOICE_SAMPLE", None)
 
-app = FastAPI(title="OpenAI Mimic", version="0.1.0")
 
 # Global instances
 stt_model = None
@@ -136,9 +136,13 @@ def load_models():
         logger.warning("⚠️ Using mock TTS (silence)")
 
 
-@app.on_event("startup")
-async def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     load_models()
+    yield
+
+
+app = FastAPI(title="OpenAI Mimic", version="0.1.0", lifespan=lifespan)
 
 
 # ===================
@@ -512,13 +516,215 @@ async def auth(request: Request):
     return JSONResponse({"status": "ok", "token": "local-no-auth-needed"})
 
 
-def main():
-    logger.info(f"Starting OpenAI Mimic server on {HOST}:{PORT}")
-    logger.info(f"LLM backend: {LLM_URL}")
-    logger.info(f"STT: Whisper ({WHISPER_MODEL})")
-    logger.info(f"TTS: {tts_backend}")
+import argparse
+import signal
+import sys
+from pathlib import Path
+
+PID_FILE = Path("/tmp/openai_mimic.pid")
+CONFIG_FILE = Path(os.path.dirname(os.path.abspath(__file__)) + "/.env")
+
+# ===================
+# Management endpoints
+# ===================
+
+@app.get("/status")
+async def server_status():
+    """Server status (management endpoint)."""
+    return JSONResponse({
+        "status": "running",
+        "pid": os.getpid(),
+        "stt": "whisper" if stt_model else "none",
+        "tts": tts_backend,
+        "llm": llm_model,
+        "llm_url": LLM_URL,
+        "port": PORT,
+        "host": HOST,
+        "uptime_seconds": time.time() - _start_time if '_start_time' in globals() else 0,
+    })
+
+
+@app.get("/config")
+async def get_config():
+    """Get current configuration."""
+    return JSONResponse({
+        "HOST": HOST,
+        "PORT": PORT,
+        "LLM_URL": LLM_URL,
+        "WHISPER_MODEL": WHISPER_MODEL,
+        "WHISPER_DEVICE": WHISPER_DEVICE,
+        "LANGUAGE": LANGUAGE,
+        "VOICE_SAMPLE": VOICE_SAMPLE,
+        "tts_backend": tts_backend,
+        "llm_model": llm_model,
+    })
+
+
+@app.post("/config")
+async def update_config(request: Request):
+    """Update configuration (edit). Accepts JSON with key-value pairs."""
+    body = await request.json()
+    updated = {}
+    for key, value in body.items():
+        updated[key] = value
+    return JSONResponse({
+        "status": "config_received",
+        "note": "Restart server to apply changes",
+        "updated": updated,
+    })
+
+
+# ===================
+# CLI Management
+# ===================
+
+def _is_running() -> tuple:
+    """Check if server is running via PID file."""
+    if PID_FILE.exists():
+        try:
+            pid = int(PID_FILE.read_text().strip())
+            # Check if process exists
+            os.kill(pid, 0)
+            return True, pid
+        except (ValueError, OSError, ProcessLookupError):
+            PID_FILE.unlink(missing_ok=True)
+            return False, None
+    return False, None
+
+
+def cmd_start(args):
+    """Start the server."""
+    running, pid = _is_running()
+    if running:
+        print(f"Server already running (PID: {pid})")
+        return
+
+    # Write PID file
+    PID_FILE.write_text(str(os.getpid()))
+
+    # Clean up PID file on exit
+    def cleanup(signum=None, frame=None):
+        PID_FILE.unlink(missing_ok=True)
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, cleanup)
+    signal.signal(signal.SIGINT, cleanup)
+
+    print(f"Starting OpenAI Mimic server on {HOST}:{PORT}")
+    print(f"LLM backend: {LLM_URL}")
+    print(f"STT: Whisper ({WHISPER_MODEL})")
+    print(f"TTS: {tts_backend}")
+    print(f"PID: {os.getpid()}")
+
     uvicorn.run(app, host=HOST, port=PORT)
 
+
+def cmd_stop(args):
+    """Stop the server."""
+    running, pid = _is_running()
+    if not running:
+        print("Server is not running")
+        return
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+        print(f"Sent stop signal to PID {pid}")
+        PID_FILE.unlink(missing_ok=True)
+    except ProcessLookupError:
+        print(f"Process {pid} not found, cleaning up PID file")
+        PID_FILE.unlink(missing_ok=True)
+
+
+def cmd_status(args):
+    """Check server status."""
+    running, pid = _is_running()
+    if running:
+        print(f"Server is RUNNING (PID: {pid})")
+        # Try to get health from the server
+        try:
+            import urllib.request
+            resp = urllib.request.urlopen(f"http://localhost:{PORT}/health", timeout=3)
+            data = json.loads(resp.read())
+            print(f"  STT: {data.get('stt', 'unknown')}")
+            print(f"  TTS: {data.get('tts', 'unknown')}")
+            print(f"  LLM: {data.get('llm', 'unknown')}")
+            print(f"  Port: {data.get('port', PORT)}")
+        except Exception as e:
+            print(f"  (Could not reach server: {e})")
+    else:
+        print("Server is NOT running")
+
+
+def cmd_edit(args):
+    """Edit configuration."""
+    print(f"Configuration file: {CONFIG_FILE}")
+    print()
+    if CONFIG_FILE.exists():
+        print("Current .env contents:")
+        print("-" * 40)
+        print(CONFIG_FILE.read_text())
+        print("-" * 40)
+    else:
+        print("No .env file found. Creating from template...")
+        CONFIG_FILE.write_text(
+            "# OpenAI Mimic Configuration\n"
+            "LLM_URL=http://localhost:1919/v1\n"
+            "WHISPER_MODEL=base\n"
+            "WHISPER_DEVICE=auto\n"
+            "PORT=8768\n"
+            "HOST=0.0.0.0\n"
+        )
+        print("Created .env template")
+
+    print()
+    print("To edit, modify the .env file directly:")
+    print(f"  nano {CONFIG_FILE}")
+    print(f"  # or")
+    print(f"  vim {CONFIG_FILE}")
+    print()
+    print("Available settings:")
+    print("  LLM_URL          - Local LLM URL (default: http://localhost:1919/v1)")
+    print("  LLM_MODEL        - Model name (auto-detect if not set)")
+    print("  WHISPER_MODEL    - Whisper model size (tiny, base, small, medium, large-v3-turbo)")
+    print("  WHISPER_DEVICE   - Device (auto, cpu, cuda, mps)")
+    print("  LANGUAGE         - Language code or empty for auto-detect")
+    print("  PORT             - Server port (default: 8768)")
+    print("  HOST             - Server host (default: 0.0.0.0)")
+    print("  VOICE_SAMPLE     - Path to voice sample WAV for XTTS cloning")
+    print()
+    print("Note: Restart server after editing .env")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="OpenAI Mimic Server")
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # start
+    start_parser = subparsers.add_parser("start", help="Start the server")
+    start_parser.set_defaults(func=cmd_start)
+
+    # stop
+    stop_parser = subparsers.add_parser("stop", help="Stop the server")
+    stop_parser.set_defaults(func=cmd_stop)
+
+    # status
+    status_parser = subparsers.add_parser("status", help="Check server status")
+    status_parser.set_defaults(func=cmd_status)
+
+    # edit
+    edit_parser = subparsers.add_parser("edit", help="Edit configuration")
+    edit_parser.set_defaults(func=cmd_edit)
+
+    args = parser.parse_args()
+
+    if args.command is None:
+        # Default: start the server (backward compatible)
+        cmd_start(args)
+    else:
+        args.func(args)
+
+
+_start_time = time.time()
 
 if __name__ == "__main__":
     main()
