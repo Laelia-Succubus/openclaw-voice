@@ -1,7 +1,7 @@
 #!/bin/bash
 # OpenClaw Voice - Unified Server Manager
 # Manages both the main server (port 8765) and OpenAI Mimic (port 8768)
-# Usage: ./run.sh {start|stop|status|edit}
+# Usage: ./run.sh {start|stop|status|tail|edit}
 
 set -e
 
@@ -19,6 +19,10 @@ fi
 # PID files
 MAIN_PID_FILE="/tmp/openclaw_voice_main.pid"
 MIMIC_PID_FILE="/tmp/openai_mimic.pid"
+
+# Log files
+MAIN_LOG="/tmp/openclaw_voice_main.log"
+MIMIC_LOG="/tmp/openai_mimic.log"
 
 # Ports
 MAIN_PORT="${OPENCLAW_PORT:-8765}"
@@ -55,7 +59,7 @@ _start_main() {
         return
     fi
     echo "  Starting main server on port $MAIN_PORT..."
-    nohup env PYTHONPATH="$SCRIPT_DIR" python -m src.server.main > /tmp/openclaw_voice_main.log 2>&1 &
+    nohup env PYTHONPATH="$SCRIPT_DIR" python -m src.server.main > "$MAIN_LOG" 2>&1 &
     local pid=$!
     echo $pid > "$MAIN_PID_FILE"
     echo "  Main server started (PID: $pid)"
@@ -67,8 +71,7 @@ _start_mimic() {
         return
     fi
     echo "  Starting OpenAI Mimic on port $MIMIC_PORT..."
-    nohup python openai_mimic.py start > /tmp/openai_mimic_start.log 2>&1 &
-    # Wait for PID file to be created by the mimic's own start command
+    nohup python "$SCRIPT_DIR/openai_mimic.py" start > "$MIMIC_LOG" 2>&1 &
     for i in $(seq 1 30); do
         if [ -f "$MIMIC_PID_FILE" ]; then
             break
@@ -78,7 +81,7 @@ _start_mimic() {
     if [ -f "$MIMIC_PID_FILE" ]; then
         echo "  OpenAI Mimic started (PID: $(cat $MIMIC_PID_FILE))"
     else
-        echo "  OpenAI Mimic starting (check /tmp/openai_mimic_start.log)"
+        echo "  OpenAI Mimic starting (check $MIMIC_LOG)"
     fi
 }
 
@@ -128,6 +131,18 @@ _status_mimic() {
     fi
 }
 
+_show_log_tail() {
+    local log_file="$1"
+    local lines="${2:-20}"
+    if [ -f "$log_file" ]; then
+        echo "  --- Last $lines lines of $log_file ---"
+        tail -n "$lines" "$log_file"
+        echo "  ---"
+    else
+        echo "  No log file found: $log_file"
+    fi
+}
+
 cmd_start() {
     echo "Starting OpenClaw Voice servers..."
     echo ""
@@ -135,6 +150,7 @@ cmd_start() {
     _start_mimic
     echo ""
     echo "Both servers starting. Check status with: ./run.sh status"
+    echo "Watch logs with: ./run.sh tail"
 }
 
 cmd_stop() {
@@ -152,6 +168,35 @@ cmd_status() {
     _status_main
     echo ""
     _status_mimic
+    echo ""
+    echo "=== Recent Logs (last 20 lines) ==="
+    echo ""
+    echo "[Main Server Log: $MAIN_LOG]"
+    _show_log_tail "$MAIN_LOG" 20
+    echo ""
+    echo "[OpenAI Mimic Log: $MIMIC_LOG]"
+    _show_log_tail "$MIMIC_LOG" 20
+    echo ""
+    echo "=== Watch Logs Live ==="
+    echo "  tail -f $MAIN_LOG"
+    echo "  tail -f $MIMIC_LOG"
+    echo "  tail -f $MAIN_LOG $MIMIC_LOG"
+}
+
+cmd_tail() {
+    echo "Watching logs (Ctrl+C to stop)..."
+    echo "  Main: $MAIN_LOG"
+    echo "  Mimic: $MIMIC_LOG"
+    echo ""
+    if [ -f "$MAIN_LOG" ] && [ -f "$MIMIC_LOG" ]; then
+        tail -f "$MAIN_LOG" "$MIMIC_LOG"
+    elif [ -f "$MAIN_LOG" ]; then
+        tail -f "$MAIN_LOG"
+    elif [ -f "$MIMIC_LOG" ]; then
+        tail -f "$MIMIC_LOG"
+    else
+        echo "No log files found. Start servers first."
+    fi
 }
 
 cmd_edit() {
@@ -228,11 +273,14 @@ else
         status)
             cmd_status
             ;;
+        tail)
+            cmd_tail
+            ;;
         edit)
             cmd_edit
             ;;
         *)
-            echo "Usage: $0 {start|stop|status|edit}"
+            echo "Usage: $0 {start|stop|status|tail|edit}"
             exit 1
             ;;
     esac
