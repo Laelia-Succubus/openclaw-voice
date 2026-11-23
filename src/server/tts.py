@@ -70,10 +70,16 @@ class ChatterboxTTS:
         # Try XTTS
         try:
             from TTS.api import TTS
+            import torch
             logger.info("Loading Coqui XTTS...")
             self.model = TTS("tts_models/multilingual/multi-dataset/xtts_v2")
+            # Move to GPU if available
+            if torch.cuda.is_available():
+                self.model.to("cuda")
+                logger.info("✅ XTTS loaded on GPU")
+            else:
+                logger.info("✅ XTTS loaded on CPU")
             self._backend = "xtts"
-            logger.info("✅ XTTS loaded")
             return
         except ImportError:
             logger.warning("Coqui TTS not installed")
