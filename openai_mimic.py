@@ -217,7 +217,11 @@ async def chat_completions(request: Request):
 
 
 async def stream_chat(messages, model, max_tokens, temperature):
-    """Stream chat completions as SSE."""
+    """Stream chat completions as SSE with proper framing.
+
+    SSE events must be separated by a blank line (\\n\\n). The upstream
+    LLM may send lines with single \\n separators, so we normalize here.
+    """
     import httpx
     async with httpx.AsyncClient(base_url=LLM_URL, timeout=120.0) as client:
         async with client.stream("POST", "/chat/completions", json={
@@ -229,7 +233,9 @@ async def stream_chat(messages, model, max_tokens, temperature):
         }) as resp:
             async for line in resp.aiter_lines():
                 if line.strip():
-                    yield line + "\n"
+                    # Each SSE data line followed by blank line delimiter
+                    yield f"{line}\n\n"
+                # Skip empty lines from upstream (we add our own delimiters)
 
 
 # ===================
